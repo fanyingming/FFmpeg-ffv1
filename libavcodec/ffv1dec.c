@@ -167,18 +167,21 @@ static av_always_inline void decode_line(FFV1Context *s, int w,
 
             av_dlog(s->avctx, "count:%d index:%d, mode:%d, x:%d pos:%d\n",
                     run_count, run_index, run_mode, x, get_bits_count(&s->gb));
+
+            if (s->cur->pict_type == AV_PICTURE_TYPE_I)
+                sample[1][x] = (predict(sample[1] + x, sample[0] + x) + diff) &
+                        ((1 << bits) - 1);
+            else
+                sample[1][x] = diff;
         }
 
         if (sign)
             diff = -diff;
-
-        sample[1][x] = (predict(sample[1] + x, sample[0] + x) + diff) &
-                       ((1 << bits) - 1);
     }
     s->run_index = run_index;
 }
 
-static void decode_plane(FFV1Context *s, uint8_t *src,
+static void decode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref,
                          int w, int h, int stride, int plane_index)
 {
     int x, y;
@@ -202,8 +205,12 @@ static void decode_plane(FFV1Context *s, uint8_t *src,
 // { START_TIMER
         if (s->avctx->bits_per_raw_sample <= 8) {
             decode_line(s, w, sample, plane_index, 8);
-            for (x = 0; x < w; x++)
-                src[x + stride * y] = sample[1][x];
+            for (x = 0; x < w; x++) {
+                if (ref)
+                    src[x + stride * y] = ref[x + stride * y] + sample[1][x];
+                else
+                    src[x + stride * y] = sample[1][x];
+            }
         } else {
             decode_line(s, w, sample, plane_index, s->avctx->bits_per_raw_sample);
             if (s->packed_at_lsb) {
@@ -351,7 +358,6 @@ static int decode_slice_header(FFV1Context *f, FFV1Context *fs)
             }
         }
     }
-
     return 0;
 }
 
@@ -362,6 +368,8 @@ static int decode_slice(AVCodecContext *c, void *arg)
     int width, height, x, y, ret;
     const int ps      = av_pix_fmt_desc_get(c->pix_fmt)->comp[0].step_minus1 + 1;
     AVFrame * const p = f->cur;
+    AVFrame * const last_frame = f->last_picture.f;
+    uint8_t *ref_data[] = {NULL,NULL,NULL,NULL};
     int i, si;
 
     for( si=0; fs != f->slice_context[si]; si ++)
@@ -435,14 +443,22 @@ static int decode_slice(AVCodecContext *c, void *arg)
         const int chroma_height = FF_CEIL_RSHIFT(height, f->chroma_v_shift);
         const int cx            = x >> f->chroma_h_shift;
         const int cy            = y >> f->chroma_v_shift;
-        decode_plane(fs, p->data[0] + ps*x + y*p->linesize[0], width, height, p->linesize[0], 0);
+
+        if (p->pict_type == AV_PICTURE_TYPE_P){
+            ref_data[0] = last_frame->data[0] + ps*x + y*p->linesize[0];
+            ref_data[1] = last_frame->data[1] + ps*cx+cy*p->linesize[1];
+            ref_data[2] = last_frame->data[2] + ps*cx+cy*p->linesize[2];
+            ref_data[3] = last_frame->data[3] + ps*x + y*p->linesize[3];
+        }
+
+        decode_plane(fs, p->data[0] + ps*x + y*p->linesize[0], ref_data[0], width, height, p->linesize[0], 0);
 
         if (f->chroma_planes) {
-            decode_plane(fs, p->data[1] + ps*cx+cy*p->linesize[1], chroma_width, chroma_height, p->linesize[1], 1);
-            decode_plane(fs, p->data[2] + ps*cx+cy*p->linesize[2], chroma_width, chroma_height, p->linesize[2], 1);
+            decode_plane(fs, p->data[1] + ps*cx+cy*p->linesize[1], ref_data[1], chroma_width, chroma_height, p->linesize[1], 1);
+            decode_plane(fs, p->data[2] + ps*cx+cy*p->linesize[2], ref_data[2], chroma_width, chroma_height, p->linesize[2], 1);
         }
         if (fs->transparency)
-            decode_plane(fs, p->data[3] + ps*x + y*p->linesize[3], width, height, p->linesize[3], 2);
+            decode_plane(fs, p->data[3] + ps*x + y*p->linesize[3], ref_data[3], width, height, p->linesize[3], 2);
     } else {
         uint8_t *planes[3] = { p->data[0] + ps * x + y * p->linesize[0],
                                p->data[1] + ps * x + y * p->linesize[1],
@@ -880,13 +896,14 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
     ff_init_range_decoder(c, buf, buf_size);
     ff_build_rac_states(c, 0.05 * (1LL << 32), 256 - 8);
 
-    p->pict_type = AV_PICTURE_TYPE_I; //FIXME I vs. P
+ //   p->pict_type = AV_PICTURE_TYPE_I; //FIXME I vs. P
     if (get_rac(c, &keystate)) {
         p->key_frame    = 1;
         f->key_frame_ok = 0;
         if ((ret = read_header(f)) < 0)
             return ret;
         f->key_frame_ok = 1;
+        p->pict_type = AV_PICTURE_TYPE_I;
     } else {
         if (!f->key_frame_ok) {
             av_log(avctx, AV_LOG_ERROR,
@@ -894,6 +911,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
             return AVERROR_INVALIDDATA;
         }
         p->key_frame = 0;
+        p->pict_type = AV_PICTURE_TYPE_P;
     }
 
     if ((ret = ff_thread_get_buffer(avctx, &f->picture, AV_GET_BUFFER_FLAG_REF)) < 0)

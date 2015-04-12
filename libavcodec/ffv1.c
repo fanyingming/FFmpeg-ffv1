@@ -139,7 +139,9 @@ av_cold int ffv1_init_slice_contexts(FFV1Context *f)
 
         fs->sample_buffer = av_malloc_array((fs->width + 6), 3 * MAX_PLANES *
                                       sizeof(*fs->sample_buffer));
-        if (!fs->sample_buffer)
+        fs->ref_sample_buffer = av_malloc_array((fs->width + 6), 3 * MAX_PLANES *
+                                      sizeof(*fs->ref_sample_buffer));
+        if (!fs->sample_buffer || !fs->ref_sample_buffer)
             return AVERROR(ENOMEM);
     }
     return 0;
@@ -210,6 +212,7 @@ av_cold int ffv1_close(AVCodecContext *avctx)
             av_freep(&p->vlc_state);
         }
         av_freep(&fs->sample_buffer);
+        av_freep(&fs->ref_sample_buffer);
     }
 
     av_freep(&avctx->stats_out);

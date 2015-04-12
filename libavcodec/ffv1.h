@@ -103,6 +103,7 @@ typedef struct FFV1Context {
     int run_index;
     int colorspace;
     int16_t *sample_buffer;
+    int16_t *ref_sample_buffer;
 
     int ec;
     int intra;

@@ -264,7 +264,7 @@ static inline void put_vlc_symbol(PutBitContext *pb, VlcState *const state,
 }
 
 static av_always_inline int encode_line(FFV1Context *s, int w,
-                                        int16_t *sample[3],
+                                        int16_t *sample[3], int16_t *ref_sample[3],
                                         int plane_index, int bits)
 {
     PlaneContext *const p = &s->plane[plane_index];
@@ -302,7 +302,11 @@ static av_always_inline int encode_line(FFV1Context *s, int w,
         int diff, context;
 
         context = get_context(p, sample[0] + x, sample[1] + x, sample[2] + x);
-        diff    = sample[0][x] - predict(sample[0] + x, sample[1] + x);
+
+        if(ref_sample[0][x] != NULL)
+            diff    = sample[0][x] - predict(sample[0] + x, sample[1] + x);
+        else
+            diff    = sample[0][x] - ref_sample[0][x];
 
         if (context < 0) {
             context = -context;
@@ -365,27 +369,35 @@ static av_always_inline int encode_line(FFV1Context *s, int w,
     return 0;
 }
 
-static int encode_plane(FFV1Context *s, uint8_t *src, int w, int h,
+static int encode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref, int w, int h,
                          int stride, int plane_index)
 {
     int x, y, i, ret;
     const int ring_size = s->avctx->context_model ? 3 : 2;
     int16_t *sample[3];
+    int16_t *ref_sample[3];
     s->run_index = 0;
 
     memset(s->sample_buffer, 0, ring_size * (w + 6) * sizeof(*s->sample_buffer));
+    memset(s->ref_sample_buffer, 0, ring_size * (w + 6) * sizeof(*s->ref_sample_buffer));
 
     for (y = 0; y < h; y++) {
-        for (i = 0; i < ring_size; i++)
+        for (i = 0; i < ring_size; i++) {
             sample[i] = s->sample_buffer + (w + 6) * ((h + i - y) % ring_size) + 3;
+            ref_sample[i] = s->ref_sample_buffer + (w + 6) * ((h + i - y) % ring_size) + 3;
+        }
 
         sample[0][-1]= sample[1][0  ];
         sample[1][ w]= sample[1][w-1];
 // { START_TIMER
         if (s->bits_per_raw_sample <= 8) {
-            for (x = 0; x < w; x++)
+            for (x = 0; x < w; x++){
+                if (ref)
+                    ref_sample[0][x] = ref[x + stride *y];
+                
                 sample[0][x] = src[x + stride * y];
-            if((ret = encode_line(s, w, sample, plane_index, 8)) < 0)
+            }
+            if((ret = encode_line(s, w, sample, ref_sample, plane_index, 8)) < 0)
                 return ret;
         } else {
             if (s->packed_at_lsb) {
@@ -397,7 +409,7 @@ static int encode_plane(FFV1Context *s, uint8_t *src, int w, int h,
                     sample[0][x] = ((uint16_t*)(src + stride*y))[x] >> (16 - s->bits_per_raw_sample);
                 }
             }
-            if((ret = encode_line(s, w, sample, plane_index, s->bits_per_raw_sample)) < 0)
+            if((ret = encode_line(s, w, sample, ref_sample, plane_index, s->bits_per_raw_sample)) < 0)
                 return ret;
         }
 // STOP_TIMER("encode line") }
@@ -457,9 +469,9 @@ static int encode_rgb_frame(FFV1Context *s, const uint8_t *src[3],
             sample[p][0][-1] = sample[p][1][0  ];
             sample[p][1][ w] = sample[p][1][w-1];
             if (lbd && s->slice_coding_mode == 0)
-                ret = encode_line(s, w, sample[p], (p + 1) / 2, 9);
+                ret = encode_line(s, w, sample[p], sample[p], (p + 1) / 2, 9);//FIXME:fix
             else
-                ret = encode_line(s, w, sample[p], (p + 1) / 2, bits + (s->slice_coding_mode != 1));
+                ret = encode_line(s, w, sample[p], sample[p], (p + 1) / 2, bits + (s->slice_coding_mode != 1));
             if (ret < 0)
                 return ret;
         }
@@ -780,10 +792,6 @@ static av_cold int encode_init(AVCodecContext *avctx)
         s->colorspace = 1;
         s->chroma_planes = 1;
         s->version = FFMAX(s->version, 1);
-        if (!s->ac && avctx->coder_type == -1) {
-            av_log(avctx, AV_LOG_INFO, "bits_per_raw_sample > 8, forcing coder 1\n");
-            s->ac = 2;
-        }
         if (!s->ac) {
             av_log(avctx, AV_LOG_ERROR, "bits_per_raw_sample of more than 8 needs -coder 1 currently\n");
             return AVERROR(ENOSYS);
@@ -1112,12 +1120,14 @@ static int encode_slice(AVCodecContext *c, void *arg)
     int x            = fs->slice_x;
     int y            = fs->slice_y;
     const AVFrame *const p = f->picture.f;
+    const AVFrame *const last_frame = f->last_picture.f;
     const int ps     = av_pix_fmt_desc_get(c->pix_fmt)->comp[0].step_minus1 + 1;
     int ret;
     RangeCoder c_bak = fs->c;
     const uint8_t *planes[3] = {p->data[0] + ps*x + y*p->linesize[0],
                                 p->data[1] + ps*x + y*p->linesize[1],
                                 p->data[2] + ps*x + y*p->linesize[2]};
+    uint8_t *ref_data[] = {NULL,NULL,NULL,NULL};
 
     fs->slice_coding_mode = 0;
     if (f->version > 3) {
@@ -1148,14 +1158,21 @@ retry:
         const int cx            = x >> f->chroma_h_shift;
         const int cy            = y >> f->chroma_v_shift;
 
-        ret = encode_plane(fs, p->data[0] + ps*x + y*p->linesize[0], width, height, p->linesize[0], 0);
+        if (c->coded_frame->pict_type == AV_PICTURE_TYPE_P) {
+            ref_data[0] = last_frame->data[0] + ps*x + y*p->linesize[0];
+            ref_data[1] = last_frame->data[1] + ps*cx+cy*p->linesize[1];
+            ref_data[2] = last_frame->data[2] + ps*cx+cy*p->linesize[2];
+            ref_data[3] = last_frame->data[3] + ps*x + y*p->linesize[3];
+        }
+
+        ret = encode_plane(fs, p->data[0] + ps*x + y*p->linesize[0], ref_data[0], width, height, p->linesize[0], 0);
 
         if (f->chroma_planes) {
-            ret |= encode_plane(fs, p->data[1] + ps*cx+cy*p->linesize[1], chroma_width, chroma_height, p->linesize[1], 1);
-            ret |= encode_plane(fs, p->data[2] + ps*cx+cy*p->linesize[2], chroma_width, chroma_height, p->linesize[2], 1);
+            ret |= encode_plane(fs, p->data[1] + ps*cx+cy*p->linesize[1], ref_data[1], chroma_width, chroma_height, p->linesize[1], 1);
+            ret |= encode_plane(fs, p->data[2] + ps*cx+cy*p->linesize[2], ref_data[2], chroma_width, chroma_height, p->linesize[2], 1);
         }
         if (fs->transparency)
-            ret |= encode_plane(fs, p->data[3] + ps*x + y*p->linesize[3], width, height, p->linesize[3], 2);
+            ret |= encode_plane(fs, p->data[3] + ps*x + y*p->linesize[3], ref_data[3], width, height, p->linesize[3], 2);
     } else {
         ret = encode_rgb_frame(fs, planes, width, height, p->linesize);
     }
@@ -1181,7 +1198,8 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 {
     FFV1Context *f      = avctx->priv_data;
     RangeCoder *const c = &f->slice_context[0]->c;
-    AVFrame *const p    = f->picture.f;
+    AVFrame *p    = f->picture.f;
+ //   AVFrame *const p    = f->picture.f;
     int used_count      = 0;
     uint8_t keystate    = 128;
     uint8_t *buf_p;
@@ -1243,17 +1261,27 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     ff_init_range_encoder(c, pkt->data, pkt->size);
     ff_build_rac_states(c, 0.05 * (1LL << 32), 256 - 8);
 
+    if (f->last_picture.f)
+        ff_thread_release_buffer(avctx, &f->last_picture);
+    FFSWAP(ThreadFrame, f->picture, f->last_picture);
+
+    f->cur = p = f->picture.f;
+    
+    if ((ret = ff_thread_get_buffer(avctx, &f->picture, AV_GET_BUFFER_FLAG_REF)) < 0)
+        return ret;
+
     av_frame_unref(p);
     if ((ret = av_frame_ref(p, pict)) < 0)
         return ret;
-    avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
 
     if (avctx->gop_size == 0 || f->picture_number % avctx->gop_size == 0) {
+        avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
         put_rac(c, &keystate, 1);
         avctx->coded_frame->key_frame = 1;
         f->gob_count++;
         write_header(f);
     } else {
+        avctx->coded_frame->pict_type = AV_PICTURE_TYPE_P;
         put_rac(c, &keystate, 0);
         avctx->coded_frame->key_frame = 0;
     }
