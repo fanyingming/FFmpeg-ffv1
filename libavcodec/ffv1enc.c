@@ -303,10 +303,10 @@ static av_always_inline int encode_line(FFV1Context *s, int w,
 
         context = get_context(p, sample[0] + x, sample[1] + x, sample[2] + x);
 
-        if(ref_sample[0][x] != NULL)
-            diff    = sample[0][x] - predict(sample[0] + x, sample[1] + x);
-        else
+        if (ref_sample[0][x])
             diff    = sample[0][x] - ref_sample[0][x];
+        else
+            diff    = sample[0][x] - predict(sample[0] + x, sample[1] + x);
 
         if (context < 0) {
             context = -context;

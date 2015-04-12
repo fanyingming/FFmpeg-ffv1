@@ -167,16 +167,16 @@ static av_always_inline void decode_line(FFV1Context *s, int w,
 
             av_dlog(s->avctx, "count:%d index:%d, mode:%d, x:%d pos:%d\n",
                     run_count, run_index, run_mode, x, get_bits_count(&s->gb));
-
-            if (s->cur->pict_type == AV_PICTURE_TYPE_I)
-                sample[1][x] = (predict(sample[1] + x, sample[0] + x) + diff) &
-                        ((1 << bits) - 1);
-            else
-                sample[1][x] = diff;
         }
 
         if (sign)
             diff = -diff;
+
+        if (s->cur->pict_type == AV_PICTURE_TYPE_I)
+                sample[1][x] = (predict(sample[1] + x, sample[0] + x) + diff) &
+                        ((1 << bits) - 1);
+            else
+                sample[1][x] = diff;
     }
     s->run_index = run_index;
 }
