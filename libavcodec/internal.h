@@ -34,13 +34,31 @@
 #include "config.h"
 
 /**
- * Codec is thread safe.
+ * The codec does not modify any global variables in the init function,
+ * allowing to call the init function without locking any global mutexes.
  */
 #define FF_CODEC_CAP_INIT_THREADSAFE        (1 << 0)
 /**
- * Codec cleans up memory on init failure.
+ * The codec allows calling the close function for deallocation even if
+ * the init function returned a failure. Without this capability flag, a
+ * codec does such cleanup internally when returning failures from the
+ * init function and does not expect the close function to be called at
+ * all.
  */
 #define FF_CODEC_CAP_INIT_CLEANUP           (1 << 1)
+
+
+#ifdef DEBUG
+#   define ff_dlog(ctx, ...) av_log(ctx, AV_LOG_DEBUG, __VA_ARGS__)
+#else
+#   define ff_dlog(ctx, ...) do { if (0) av_log(ctx, AV_LOG_DEBUG, __VA_ARGS__); } while (0)
+#endif
+
+#ifdef TRACE
+#   define ff_tlog(ctx, ...) av_log(ctx, AV_LOG_TRACE, __VA_ARGS__)
+#else
+#   define ff_tlog(p, ...)
+#endif
 
 
 #define FF_SANE_NB_CHANNELS 63U

@@ -100,7 +100,20 @@ static av_cold int libx265_encode_init(AVCodecContext *avctx)
     }
 
     if (x265_param_default_preset(ctx->params, ctx->preset, ctx->tune) < 0) {
-        av_log(avctx, AV_LOG_ERROR, "Invalid preset or tune.\n");
+        int i;
+
+        av_log(avctx, AV_LOG_ERROR, "Error setting preset/tune %s/%s.\n", ctx->preset, ctx->tune);
+        av_log(avctx, AV_LOG_INFO, "Possible presets:");
+        for (i = 0; x265_preset_names[i]; i++)
+            av_log(avctx, AV_LOG_INFO, " %s", x265_preset_names[i]);
+
+        av_log(avctx, AV_LOG_INFO, "\n");
+        av_log(avctx, AV_LOG_INFO, "Possible tunes:");
+        for (i = 0; x265_tune_names[i]; i++)
+            av_log(avctx, AV_LOG_INFO, " %s", x265_tune_names[i]);
+
+        av_log(avctx, AV_LOG_INFO, "\n");
+
         return AVERROR(EINVAL);
     }
 
@@ -110,6 +123,22 @@ static av_cold int libx265_encode_init(AVCodecContext *avctx)
     ctx->params->sourceWidth     = avctx->width;
     ctx->params->sourceHeight    = avctx->height;
     ctx->params->bEnablePsnr     = !!(avctx->flags & CODEC_FLAG_PSNR);
+
+    if ((avctx->color_primaries <= AVCOL_PRI_BT2020 &&
+         avctx->color_primaries != AVCOL_PRI_UNSPECIFIED) ||
+        (avctx->color_trc <= AVCOL_TRC_BT2020_12 &&
+         avctx->color_trc != AVCOL_TRC_UNSPECIFIED) ||
+        (avctx->colorspace <= AVCOL_SPC_BT2020_CL &&
+         avctx->colorspace != AVCOL_SPC_UNSPECIFIED)) {
+
+        ctx->params->vui.bEnableVideoSignalTypePresentFlag  = 1;
+        ctx->params->vui.bEnableColorDescriptionPresentFlag = 1;
+
+        // x265 validates the parameters internally
+        ctx->params->vui.colorPrimaries          = avctx->color_primaries;
+        ctx->params->vui.transferCharacteristics = avctx->color_trc;
+        ctx->params->vui.matrixCoeffs            = avctx->colorspace;
+    }
 
     if (avctx->sample_aspect_ratio.num > 0 && avctx->sample_aspect_ratio.den > 0) {
         char sar[12];

@@ -233,6 +233,53 @@
  *
  * @defgroup lavf_io I/O Read/Write
  * @{
+ * @section lavf_io_dirlist Directory listing
+ * The directory listing API allows to list files on remote servers.
+ *
+ * Some of possible use cases:
+ * - an "open file" dialog to choose files from a remote location,
+ * - a recursive media finder providing a player with an ability to play all
+ * files from a given directory.
+ *
+ * @subsection lavf_io_dirlist_open Opening a directory
+ * At first, a directory needs to be opened by calling avio_open_dir()
+ * supplied with a URL and, optionally, ::AVDictionary containing
+ * protocol-specific parameters. The function returns zero or positive
+ * integer and allocates AVIODirContext on success.
+ *
+ * @code
+ * AVIODirContext *ctx = NULL;
+ * if (avio_open_dir(&ctx, "smb://example.com/some_dir", NULL) < 0) {
+ *     fprintf(stderr, "Cannot open directory.\n");
+ *     abort();
+ * }
+ * @endcode
+ *
+ * This code tries to open a sample directory using smb protocol without
+ * any additional parameters.
+ *
+ * @subsection lavf_io_dirlist_read Reading entries
+ * Each directory's entry (i.e. file, another directory, anything else
+ * within ::AVIODirEntryType) is represented by AVIODirEntry.
+ * Reading consecutive entries from an opened AVIODirContext is done by
+ * repeatedly calling avio_read_dir() on it. Each call returns zero or
+ * positive integer if successful. Reading can be stopped right after the
+ * NULL entry has been read -- it means there are no entries left to be
+ * read. The following code reads all entries from a directory associated
+ * with ctx and prints their names to standard output.
+ * @code
+ * AVIODirEntry *entry = NULL;
+ * for (;;) {
+ *     if (avio_read_dir(ctx, &entry) < 0) {
+ *         fprintf(stderr, "Cannot list directory.\n");
+ *         abort();
+ *     }
+ *     if (!entry)
+ *         break;
+ *     printf("%s\n", entry->name);
+ *     avio_free_directory_entry(&entry);
+ * }
+ * @endcode
  * @}
  *
  * @defgroup lavf_codec Demuxers
@@ -1034,6 +1081,15 @@ typedef struct AVStream {
      * Number of samples to skip at the start of the frame decoded from the next packet.
      */
     int skip_samples;
+
+    /**
+     * If not 0, the number of samples that should be skipped from the start of
+     * the stream (the samples are removed from packets with pts==0, which also
+     * assumes negative timestamps do not happen).
+     * Intended for use with formats such as mp3 with ad-hoc gapless audio
+     * support.
+     */
+    int64_t start_skip_samples;
 
     /**
      * If not 0, the first audio sample that should be discarded from the stream.
