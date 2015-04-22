@@ -303,14 +303,10 @@ static av_always_inline int encode_line(FFV1Context *s, int w,
 
         context = get_context(p, sample[0] + x, sample[1] + x, sample[2] + x);
 
-        
         if (ref_sample[0])
             diff    = sample[0][x] - ref_sample[0][x];
         else
             diff    = sample[0][x] - predict(sample[0] + x, sample[1] + x);
-
-        if ( (plane_index==0 && ref_sample[0]) && (x==13) )
-            av_log(NULL, AV_LOG_DEBUG, "ref 13: %d\tcontext:%d\tdiff:%d\n", ref_sample[0][x],context,diff);
 
         if (context < 0) {
             context = -context;
@@ -395,15 +391,14 @@ static int encode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref, int w, int h
         sample[1][ w]= sample[1][w-1];
 // { START_TIMER
         if (s->bits_per_raw_sample <= 8) {
-            for (x = 0; x < w; x++){
+            for (x = 0; x < w; x++) {
                 if (ref)
-                    ref_sample[0][x] = ref[x + stride *y];
+                    ref_sample[0][x] = ref[x + stride * y];
                 
                 sample[0][x] = src[x + stride * y];
             }
-            if ( ref==NULL ){
+            if (ref == NULL)//FIXME: better way to let encode_line know we are encode P frame.
                 ref_sample[0] = NULL;
-            }
             if((ret = encode_line(s, w, sample, ref_sample, plane_index, 8)) < 0)
                 return ret;
         } else {
@@ -708,10 +703,12 @@ static av_cold int encode_init(AVCodecContext *avctx)
         s->ec = (s->version >= 3);
     }
 
-    if ((s->version == 2 || s->version>3) && avctx->strict_std_compliance > FF_COMPLIANCE_EXPERIMENTAL) {
+    if ((s->version == 2 || s->version>4) && avctx->strict_std_compliance > FF_COMPLIANCE_EXPERIMENTAL) {
         av_log(avctx, AV_LOG_ERROR, "Version 2 needed for requested features but version 2 is experimental and not enabled\n");
         return AVERROR_INVALIDDATA;
     }
+
+    av_log(avctx, AV_LOG_DEBUG, "FFv1 version is %d\n", s->version);
 
     s->ac = avctx->coder_type > 0 ? 2 : 0;
 
@@ -811,6 +808,17 @@ static av_cold int encode_init(AVCodecContext *avctx)
     default:
         av_log(avctx, AV_LOG_ERROR, "format not supported\n");
         return AVERROR(ENOSYS);
+    }
+    //FIXME: support these
+    if (s->version == 4) {
+        if (s->bits_per_raw_sample > 8) {
+            av_log(avctx, AV_LOG_ERROR, "Version 4 only support 8 bit currently\n");
+            return AVERROR_INVALIDDATA;
+        }
+        if (s->colorspace != 0) {
+            av_log(avctx, AV_LOG_ERROR, "Version 4 only support yuv colorspace currently\n");
+            return AVERROR_INVALIDDATA;
+        }
     }
     if (s->transparency) {
         av_log(avctx, AV_LOG_WARNING, "Storing alpha plane, this will require a recent FFV1 decoder to playback!\n");
@@ -1131,7 +1139,7 @@ static int encode_slice(AVCodecContext *c, void *arg)
     int x            = fs->slice_x;
     int y            = fs->slice_y;
     const AVFrame *const p = f->picture.f;
-    const AVFrame *const last_frame = f->last_picture.f;
+    const AVFrame *const last_picture = f->last_picture.f;
     const int ps     = av_pix_fmt_desc_get(c->pix_fmt)->comp[0].step_minus1 + 1;
     int ret;
     RangeCoder c_bak = fs->c;
@@ -1170,10 +1178,10 @@ retry:
         const int cy            = y >> f->chroma_v_shift;
 
         if (c->coded_frame->pict_type == AV_PICTURE_TYPE_P) {
-            ref_data[0] = last_frame->data[0] + ps*x + y*p->linesize[0];
-            ref_data[1] = last_frame->data[1] + ps*cx+cy*p->linesize[1];
-            ref_data[2] = last_frame->data[2] + ps*cx+cy*p->linesize[2];
-            ref_data[3] = last_frame->data[3] + ps*x + y*p->linesize[3];
+            ref_data[0] = last_picture->data[0] + ps*x + y*p->linesize[0];
+            ref_data[1] = last_picture->data[1] + ps*cx+cy*p->linesize[1];
+            ref_data[2] = last_picture->data[2] + ps*cx+cy*p->linesize[2];
+            ref_data[3] = last_picture->data[3] + ps*x + y*p->linesize[3];
         }
 
         ret = encode_plane(fs, p->data[0] + ps*x + y*p->linesize[0], ref_data[0], width, height, p->linesize[0], 0);
@@ -1210,14 +1218,15 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     FFV1Context *f      = avctx->priv_data;
     RangeCoder *const c = &f->slice_context[0]->c;
     AVFrame *p    = f->picture.f;
- //   AVFrame *const p    = f->picture.f;
     int used_count      = 0;
     uint8_t keystate    = 128;
     uint8_t *buf_p;
     int i, ret;
     int64_t maxsize =   FF_MIN_BUFFER_SIZE
                       + avctx->width*avctx->height*35LL*4;
-    av_log(NULL, AV_LOG_DEBUG, "picture_number: %d\n", f->picture_number);
+
+    av_log(NULL, AV_LOG_DEBUG, "current picture_number: %d\n", f->picture_number);
+
     if(!pict) {
         if (avctx->flags & CODEC_FLAG_PASS1) {
             int j, k, m;
@@ -1285,14 +1294,19 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     if ((ret = av_frame_ref(p, pict)) < 0)
         return ret;
 
-    if (avctx->gop_size == 0 || f->picture_number % avctx->gop_size == 0) {
+    if (f->version < 4)
         avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
+
+    if (avctx->gop_size == 0 || f->picture_number % avctx->gop_size == 0) {
+        if (f->version >= 4)
+            avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
         put_rac(c, &keystate, 1);
         avctx->coded_frame->key_frame = 1;
         f->gob_count++;
         write_header(f);
     } else {
-        avctx->coded_frame->pict_type = AV_PICTURE_TYPE_P;
+        if (f->version >= 4)
+            avctx->coded_frame->pict_type = AV_PICTURE_TYPE_P;
         put_rac(c, &keystate, 0);
         avctx->coded_frame->key_frame = 0;
     }
