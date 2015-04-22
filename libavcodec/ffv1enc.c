@@ -1298,17 +1298,17 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
 
     if (avctx->gop_size == 0 || f->picture_number % avctx->gop_size == 0) {
-        if (f->version >= 4)
-            avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
         put_rac(c, &keystate, 1);
         avctx->coded_frame->key_frame = 1;
         f->gob_count++;
         write_header(f);
-    } else {
         if (f->version >= 4)
-            avctx->coded_frame->pict_type = AV_PICTURE_TYPE_P;
+            avctx->coded_frame->pict_type = AV_PICTURE_TYPE_I;
+    } else {
         put_rac(c, &keystate, 0);
         avctx->coded_frame->key_frame = 0;
+        if (f->version >= 4)
+            avctx->coded_frame->pict_type = AV_PICTURE_TYPE_P;
     }
 
     if (f->ac > 1) {
@@ -1360,6 +1360,10 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 
     if (avctx->flags & CODEC_FLAG_PASS1)
         avctx->stats_out[0] = '\0';
+
+    if (f->last_picture.f)
+        ff_thread_release_buffer(avctx, &f->last_picture);
+    f->cur = NULL;
 
     f->picture_number++;
     pkt->size   = buf_p - pkt->data;

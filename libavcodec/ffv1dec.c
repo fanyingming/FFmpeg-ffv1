@@ -212,11 +212,11 @@ static void decode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref,
 
 // { START_TIMER
         if (s->avctx->bits_per_raw_sample <= 8) {
-            if (ref && y==0 &&plane_index==0)
-                av_log(NULL, AV_LOG_DEBUG, "top plane:0:%d\t13:%d\n", ref[0+stride*y], ref[13+stride*y]);
-            if (ref)
-                for (x = 0; x < w; x++)
+            if (ref) {
+                for (x = 0; x < w; x++) {
                     ref_sample[0][x] = ref[x + stride * y]; 
+                }
+            }
             decode_line(s, w, sample, ref_sample, plane_index, 8);
             for (x = 0; x < w; x++) {
                 src[x + stride * y] = sample[1][x];
@@ -378,7 +378,7 @@ static int decode_slice(AVCodecContext *c, void *arg)
     int width, height, x, y, ret;
     const int ps      = av_pix_fmt_desc_get(c->pix_fmt)->comp[0].step_minus1 + 1;
     AVFrame * const p = f->cur;
-    AVFrame * const last_frame = f->last_picture.f;
+    AVFrame * const last_picture = f->last_picture.f;
     uint8_t *ref_data[] = {NULL,NULL,NULL,NULL};
     int i, si;
 
@@ -454,11 +454,11 @@ static int decode_slice(AVCodecContext *c, void *arg)
         const int cx            = x >> f->chroma_h_shift;
         const int cy            = y >> f->chroma_v_shift;
 
-        if (p->pict_type == AV_PICTURE_TYPE_P){
-            ref_data[0] = last_frame->data[0] + ps*x + y*p->linesize[0];
-            ref_data[1] = last_frame->data[1] + ps*cx+cy*p->linesize[1];
-            ref_data[2] = last_frame->data[2] + ps*cx+cy*p->linesize[2];
-            ref_data[3] = last_frame->data[3] + ps*x + y*p->linesize[3];
+        if (p->pict_type == AV_PICTURE_TYPE_P) {
+            ref_data[0] = last_picture->data[0] + ps*x + y*p->linesize[0];
+            ref_data[1] = last_picture->data[1] + ps*cx+cy*p->linesize[1];
+            ref_data[2] = last_picture->data[2] + ps*cx+cy*p->linesize[2];
+            ref_data[3] = last_picture->data[3] + ps*x + y*p->linesize[3];
         }
 
         decode_plane(fs, p->data[0] + ps*x + y*p->linesize[0], ref_data[0], width, height, p->linesize[0], 0);
@@ -906,16 +906,17 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
     ff_init_range_decoder(c, buf, buf_size);
     ff_build_rac_states(c, 0.05 * (1LL << 32), 256 - 8);
 
-    av_log(f->avctx, AV_LOG_DEBUG, "pic_num: %d\n", f->picture_number);
+    if (f->version < 4)
+        p->pict_type = AV_PICTURE_TYPE_I;
 
- //   p->pict_type = AV_PICTURE_TYPE_I; //FIXME I vs. P
     if (get_rac(c, &keystate)) {
         p->key_frame    = 1;
         f->key_frame_ok = 0;
         if ((ret = read_header(f)) < 0)
             return ret;
         f->key_frame_ok = 1;
-        p->pict_type = AV_PICTURE_TYPE_I;
+        if (f->version >= 4)
+            p->pict_type = AV_PICTURE_TYPE_I;
     } else {
         if (!f->key_frame_ok) {
             av_log(avctx, AV_LOG_ERROR,
@@ -923,7 +924,8 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
             return AVERROR_INVALIDDATA;
         }
         p->key_frame = 0;
-        p->pict_type = AV_PICTURE_TYPE_P;
+        if (f->version >= 4)
+            p->pict_type = AV_PICTURE_TYPE_P;
     }
 
     if ((ret = ff_thread_get_buffer(avctx, &f->picture, AV_GET_BUFFER_FLAG_REF)) < 0)
