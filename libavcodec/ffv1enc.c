@@ -303,10 +303,14 @@ static av_always_inline int encode_line(FFV1Context *s, int w,
 
         context = get_context(p, sample[0] + x, sample[1] + x, sample[2] + x);
 
-        if (ref_sample[0][x])
+        
+        if (ref_sample[0])
             diff    = sample[0][x] - ref_sample[0][x];
         else
             diff    = sample[0][x] - predict(sample[0] + x, sample[1] + x);
+
+        if ( (plane_index==0 && ref_sample[0]) && (x==13) )
+            av_log(NULL, AV_LOG_DEBUG, "ref 13: %d\tcontext:%d\tdiff:%d\n", ref_sample[0][x],context,diff);
 
         if (context < 0) {
             context = -context;
@@ -396,6 +400,9 @@ static int encode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref, int w, int h
                     ref_sample[0][x] = ref[x + stride *y];
                 
                 sample[0][x] = src[x + stride * y];
+            }
+            if ( ref==NULL ){
+                ref_sample[0] = NULL;
             }
             if((ret = encode_line(s, w, sample, ref_sample, plane_index, 8)) < 0)
                 return ret;
@@ -1210,7 +1217,7 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
     int i, ret;
     int64_t maxsize =   FF_MIN_BUFFER_SIZE
                       + avctx->width*avctx->height*35LL*4;
-
+    av_log(NULL, AV_LOG_DEBUG, "picture_number: %d\n", f->picture_number);
     if(!pict) {
         if (avctx->flags & CODEC_FLAG_PASS1) {
             int j, k, m;

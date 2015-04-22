@@ -95,7 +95,7 @@ static inline int get_vlc_symbol(GetBitContext *gb, VlcState *const state,
 }
 
 static av_always_inline void decode_line(FFV1Context *s, int w,
-                                         int16_t *sample[2],
+                                         int16_t *sample[2], int16_t *ref_sample[2],
                                          int plane_index, int bits)
 {
     PlaneContext *const p = &s->plane[plane_index];
@@ -132,6 +132,8 @@ static av_always_inline void decode_line(FFV1Context *s, int w,
 
         if (s->ac) {
             diff = get_symbol_inline(c, p->state[context], 1);
+            if(plane_index==0 && x==13)
+            av_log(NULL, AV_LOG_DEBUG, "ref 13: %d\tcontext:%d\tdiff:%d\n", ref_sample[0][x],context,diff);
         } else {
             if (context == 0 && run_mode == 0)
                 run_mode = 1;
@@ -173,10 +175,10 @@ static av_always_inline void decode_line(FFV1Context *s, int w,
             diff = -diff;
 
         if (s->cur->pict_type == AV_PICTURE_TYPE_I)
-                sample[1][x] = (predict(sample[1] + x, sample[0] + x) + diff) &
+            sample[1][x] = (predict(sample[1] + x, sample[0] + x) + diff) &
                         ((1 << bits) - 1);
-            else
-                sample[1][x] = diff;
+        else
+            sample[1][x] = (diff + ref_sample[0][x]) & ((1 << bits) - 1);
     }
     s->run_index = run_index;
 }
@@ -186,12 +188,18 @@ static void decode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref,
 {
     int x, y;
     int16_t *sample[2];
+    int16_t *ref_sample[2];
+
     sample[0] = s->sample_buffer + 3;
     sample[1] = s->sample_buffer + w + 6 + 3;
+
+    ref_sample[0] = s->ref_sample_buffer + 3;
+    ref_sample[1] = s->ref_sample_buffer + w + 6 + 3;
 
     s->run_index = 0;
 
     memset(s->sample_buffer, 0, 2 * (w + 6) * sizeof(*s->sample_buffer));
+    memset(s->ref_sample_buffer, 0, 2 * (w + 6) * sizeof(*s->ref_sample_buffer));
 
     for (y = 0; y < h; y++) {
         int16_t *temp = sample[0]; // FIXME: try a normal buffer
@@ -204,15 +212,17 @@ static void decode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref,
 
 // { START_TIMER
         if (s->avctx->bits_per_raw_sample <= 8) {
-            decode_line(s, w, sample, plane_index, 8);
+            if (ref && y==0 &&plane_index==0)
+                av_log(NULL, AV_LOG_DEBUG, "top plane:0:%d\t13:%d\n", ref[0+stride*y], ref[13+stride*y]);
+            if (ref)
+                for (x = 0; x < w; x++)
+                    ref_sample[0][x] = ref[x + stride * y]; 
+            decode_line(s, w, sample, ref_sample, plane_index, 8);
             for (x = 0; x < w; x++) {
-                if (ref)
-                    src[x + stride * y] = ref[x + stride * y] + sample[1][x];
-                else
-                    src[x + stride * y] = sample[1][x];
+                src[x + stride * y] = sample[1][x];
             }
         } else {
-            decode_line(s, w, sample, plane_index, s->avctx->bits_per_raw_sample);
+            decode_line(s, w, sample, ref_sample, plane_index, s->avctx->bits_per_raw_sample);
             if (s->packed_at_lsb) {
                 for (x = 0; x < w; x++) {
                     ((uint16_t*)(src + stride*y))[x] = sample[1][x];
@@ -254,9 +264,9 @@ static void decode_rgb_frame(FFV1Context *s, uint8_t *src[3], int w, int h, int 
             sample[p][1][-1]= sample[p][0][0  ];
             sample[p][0][ w]= sample[p][0][w-1];
             if (lbd && s->slice_coding_mode == 0)
-                decode_line(s, w, sample[p], (p + 1)/2, 9);
+                decode_line(s, w, sample[p], NULL, (p + 1)/2, 9);
             else
-                decode_line(s, w, sample[p], (p + 1)/2, bits + (s->slice_coding_mode != 1));
+                decode_line(s, w, sample[p], NULL, (p + 1)/2, bits + (s->slice_coding_mode != 1));
         }
         for (x = 0; x < w; x++) {
             int g = sample[0][1][x];
@@ -895,6 +905,8 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame, AVPac
     f->avctx = avctx;
     ff_init_range_decoder(c, buf, buf_size);
     ff_build_rac_states(c, 0.05 * (1LL << 32), 256 - 8);
+
+    av_log(f->avctx, AV_LOG_DEBUG, "pic_num: %d\n", f->picture_number);
 
  //   p->pict_type = AV_PICTURE_TYPE_I; //FIXME I vs. P
     if (get_rac(c, &keystate)) {
