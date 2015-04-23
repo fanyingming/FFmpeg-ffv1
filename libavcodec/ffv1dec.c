@@ -364,6 +364,7 @@ static int decode_slice_header(FFV1Context *f, FFV1Context *fs)
             }
         }
     }
+
     return 0;
 }
 
