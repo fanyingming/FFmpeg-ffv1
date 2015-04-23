@@ -397,7 +397,7 @@ static int encode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref, int w, int h
                 
                 sample[0][x] = src[x + stride * y];
             }
-            if (ref == NULL)//FIXME: better way to let encode_line know we are encode P frame.
+            if (ref == NULL)//FIXME: try better way to let encode_line know we are encoding P frame.
                 ref_sample[0] = NULL;
             if((ret = encode_line(s, w, sample, ref_sample, plane_index, 8)) < 0)
                 return ret;
@@ -471,9 +471,9 @@ static int encode_rgb_frame(FFV1Context *s, const uint8_t *src[3],
             sample[p][0][-1] = sample[p][1][0  ];
             sample[p][1][ w] = sample[p][1][w-1];
             if (lbd && s->slice_coding_mode == 0)
-                ret = encode_line(s, w, sample[p], sample[p], (p + 1) / 2, 9);//FIXME:fix
+                ret = encode_line(s, w, sample[p], NULL, (p + 1) / 2, 9);
             else
-                ret = encode_line(s, w, sample[p], sample[p], (p + 1) / 2, bits + (s->slice_coding_mode != 1));
+                ret = encode_line(s, w, sample[p], NULL, (p + 1) / 2, bits + (s->slice_coding_mode != 1));
             if (ret < 0)
                 return ret;
         }
@@ -797,7 +797,7 @@ static av_cold int encode_init(AVCodecContext *avctx)
         s->chroma_planes = 1;
         s->version = FFMAX(s->version, 1);
         if (!s->ac && avctx->coder_type == -1) {
-           av_log(avctx, AV_LOG_INFO, "bits_per_raw_sample > 8, forcing coder 1\n");
+            av_log(avctx, AV_LOG_INFO, "bits_per_raw_sample > 8, forcing coder 1\n");
             s->ac = 2;
         }
         if (!s->ac) {
@@ -1217,15 +1217,13 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 {
     FFV1Context *f      = avctx->priv_data;
     RangeCoder *const c = &f->slice_context[0]->c;
-    AVFrame *p    = f->picture.f;
+    AVFrame *p          = f->picture.f;
     int used_count      = 0;
     uint8_t keystate    = 128;
     uint8_t *buf_p;
     int i, ret;
     int64_t maxsize =   FF_MIN_BUFFER_SIZE
                       + avctx->width*avctx->height*35LL*4;
-
-    av_log(NULL, AV_LOG_DEBUG, "current picture_number: %d\n", f->picture_number);
 
     if(!pict) {
         if (avctx->flags & CODEC_FLAG_PASS1) {
