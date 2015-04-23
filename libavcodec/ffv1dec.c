@@ -215,9 +215,8 @@ static void decode_plane(FFV1Context *s, uint8_t *src, uint8_t *ref,
                 }
             }
             decode_line(s, w, sample, ref_sample, plane_index, 8);
-            for (x = 0; x < w; x++) {
+            for (x = 0; x < w; x++)
                 src[x + stride * y] = sample[1][x];
-            }
         } else {
             decode_line(s, w, sample, ref_sample, plane_index, s->avctx->bits_per_raw_sample);
             if (s->packed_at_lsb) {
