@@ -132,8 +132,6 @@ static av_always_inline void decode_line(FFV1Context *s, int w,
 
         if (s->ac) {
             diff = get_symbol_inline(c, p->state[context], 1);
-            if(plane_index==0 && x==13)
-            av_log(NULL, AV_LOG_DEBUG, "ref 13: %d\tcontext:%d\tdiff:%d\n", ref_sample[0][x],context,diff);
         } else {
             if (context == 0 && run_mode == 0)
                 run_mode = 1;
